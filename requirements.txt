@@ -1,4 +1,5 @@
-fastapi
+fastapi>=0.95.0
 uvicorn[standard]
-playwright
-httpx
+playwright>=1.32.0
+httpx>=0.24.0
+python-multipart

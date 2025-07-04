@@ -3,3 +3,5 @@ uvicorn[standard]
 playwright>=1.32.0
 httpx>=0.24.0
 python-multipart
+playwright>=1.32.0
+httpx>=0.23.0

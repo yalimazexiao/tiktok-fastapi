@@ -1,98 +1,67 @@
 from fastapi import FastAPI, Query, HTTPException
 from playwright.async_api import async_playwright, TimeoutError
 from urllib.parse import urlparse, urlunparse
-import logging
 import re
 
 app = FastAPI()
-logger = logging.getLogger(__name__)
 
 def clean_tiktok_url(url: str) -> str:
-    """清洗手机端TikTok链接，保留核心视频路径"""
-    # 处理分享短链接（如vm.tiktok.com）
-    if re.match(r'https?://vm\.tiktok\.com/', url):
-        return url  # 需要后续处理
-    
-    parsed = urlparse(url)
-    path_parts = parsed.path.split('/')
-    
-    # 提取用户名和视频ID
-    if len(path_parts) >= 4 and path_parts[2] == 'video':
-        return urlunparse((
-            'https',
-            'www.tiktok.com',
-            f'@{path_parts[1]}/video/{path_parts[3]}',
-            '', '', ''
-        ))
+    """提取出标准 TikTok 视频链接格式"""
+    match = re.search(r'(https?://)?(www|vm)?\.?tiktok\.com/.+?/video/(\d+)', url)
+    if match:
+        user = re.search(r'@([^/?]+)/video', url)
+        username = user.group(1) if user else 'user'
+        video_id = match.group(3)
+        return f"https://www.tiktok.com/@{username}/video/{video_id}"
     return url
 
 async def get_video_url(url: str):
     async with async_playwright() as p:
-        browser = None
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage"
+            ]
+        )
+        context = await browser.new_context(
+            viewport={'width': 375, 'height': 812},
+            device_scale_factor=3,
+            is_mobile=True,
+            user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15"
+        )
+        page = await context.new_page()
+
+        await page.add_init_script("""
+            delete navigator.__proto__.webdriver;
+            window.navigator.chrome = { runtime: {} };
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+        """)
+
         try:
-            # 移动端浏览器配置
-            browser = await p.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--user-agent=Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1"
-                ]
-            )
-            
-            context = await browser.new_context(
-                viewport={'width': 375, 'height': 812},
-                device_scale_factor=3,
-                is_mobile=True,
-                locale="en-US"
-            )
-
-            page = await context.new_page()
-            
-            # 绕过自动化检测
-            await page.add_init_script("""
-                delete navigator.__proto__.webdriver;
-            """)
-
-            logger.info(f"正在访问: {url}")
-            await page.goto(url, timeout=120000, wait_until="networkidle")
-            
-            # 多种方式获取视频URL
-            video_url = await page.evaluate("""() => {
-                const video = document.querySelector('video');
-                if (video) return video.src || video.querySelector('source')?.src;
-                return null;
-            }""")
-
+            await page.goto(url, timeout=90000, wait_until="domcontentloaded")
+            await page.wait_for_timeout(3000)  # 等待资源加载
+            await page.wait_for_selector("video", timeout=15000)
+            video_url = await page.eval_on_selector("video", "el => el.src")
             if not video_url:
-                raise HTTPException(status_code=404, detail="视频元素未找到")
-
+                video_url = await page.eval_on_selector("video source", "el => el.src")
             return video_url
-
         except TimeoutError:
-            raise HTTPException(status_code=408, detail="页面加载超时")
+            raise HTTPException(status_code=408, detail="页面加载超时或视频元素未加载")
         except Exception as e:
-            logger.error(f"抓取错误: {str(e)}")
-            raise HTTPException(status_code=500, detail="视频获取失败")
+            raise HTTPException(status_code=500, detail=f"视频解析失败: {str(e)}")
         finally:
-            if browser:
-                await browser.close()
+            await browser.close()
 
 @app.get("/download")
-async def download(url: str = Query(..., description="TikTok链接")):
-    try:
-        cleaned_url = clean_tiktok_url(url)
-        video_url = await get_video_url(cleaned_url)
-        
-        return {
-            "status": "success",
-            "original_url": url,
-            "video_url": video_url,
-            "download_tip": "复制下方URL到浏览器下载",
-            "user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15"
-        }
-    except HTTPException as e:
-        raise
-    except Exception as e:
-        logger.error(f"接口错误: {str(e)}")
-        raise HTTPException(status_code=500, detail="服务器处理失败")
+async def download(url: str = Query(..., description="TikTok 视频链接")):
+    cleaned_url = clean_tiktok_url(url)
+    video_url = await get_video_url(cleaned_url)
+    if not video_url:
+        raise HTTPException(status_code=404, detail="未找到视频链接")
+    return {
+        "status": "success",
+        "video_url": video_url,
+        "tip": "请复制链接到浏览器下载"
+    }

@@ -17,13 +17,15 @@ async def get_tiktok_video_url(video_page_url: str) -> str:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
             await page.goto(video_page_url, wait_until="networkidle")
-            video_url = await page.eval_on_selector("video", "video => video.src")
+            # 等待 video 元素出现，最长等 10 秒
+            await page.wait_for_selector("video", timeout=10000)
+            video_url = await page.eval_on_selector("video", "el => el.src")
             await browser.close()
             if not video_url:
                 raise HTTPException(status_code=404, detail="未找到视频地址")
             return video_url
     except PlaywrightTimeoutError:
-        raise HTTPException(status_code=504, detail="访问 TikTok 超时")
+        raise HTTPException(status_code=504, detail="访问 TikTok 超时，页面元素未加载")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"解析失败: {str(e)}")
 

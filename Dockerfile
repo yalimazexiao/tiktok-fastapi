@@ -4,6 +4,10 @@ WORKDIR /app
 
 # 安装系统依赖
 RUN apt-get update && apt-get install -y \
+    libopus0 \
+    libwebp6 \
+    libwoff1 \
+    libharfbuzz-icu0
     wget \
     curl \
     gnupg \
